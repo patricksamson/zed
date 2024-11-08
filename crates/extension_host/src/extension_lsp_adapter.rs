@@ -1,10 +1,11 @@
 use crate::wasm_host::{
-    wit::{self, LanguageServerConfig},
+    wit::{self},
     WasmExtension, WasmHost,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use collections::HashMap;
+use extension::Extension;
 use futures::{Future, FutureExt};
 use gpui::AsyncAppContext;
 use language::{
@@ -19,10 +20,39 @@ use std::{any::Any, path::PathBuf, pin::Pin, sync::Arc};
 use util::{maybe, ResultExt};
 use wasmtime_wasi::WasiView as _;
 
+pub struct WorktreeResourceDelegate(pub Arc<dyn LspAdapterDelegate>);
+
+#[async_trait]
+impl extension::WorktreeResource for WorktreeResourceDelegate {
+    fn id(&self) -> u64 {
+        self.0.worktree_id().to_proto()
+    }
+
+    fn root_path(&self) -> String {
+        self.0.worktree_root_path().to_string_lossy().to_string()
+    }
+
+    async fn read_text_file(&self, path: PathBuf) -> Result<String> {
+        self.0.read_text_file(path).await
+    }
+
+    async fn which(&self, binary_name: String) -> Option<String> {
+        self.0
+            .which(binary_name.as_ref())
+            .await
+            .map(|path| path.to_string_lossy().to_string())
+    }
+
+    async fn shell_env(&self) -> Vec<(String, String)> {
+        self.0.shell_env().await.into_iter().collect()
+    }
+}
+
 pub struct ExtensionLspAdapter {
-    pub(crate) extension: WasmExtension,
+    pub(crate) extension: Arc<dyn Extension>,
+    pub(crate) wasm_extension: WasmExtension,
     pub(crate) language_server_id: LanguageServerName,
-    pub(crate) config: LanguageServerConfig,
+    pub(crate) config: extension::LanguageServerConfig,
     pub(crate) host: Arc<WasmHost>,
 }
 
@@ -42,30 +72,16 @@ impl LspAdapter for ExtensionLspAdapter {
         async move {
             let command = self
                 .extension
-                .call({
-                    let this = self.clone();
-                    |extension, store| {
-                        async move {
-                            let resource = store.data_mut().table().push(delegate)?;
-                            let command = extension
-                                .call_language_server_command(
-                                    store,
-                                    &this.language_server_id,
-                                    &this.config,
-                                    resource,
-                                )
-                                .await?
-                                .map_err(|e| anyhow!("{}", e))?;
-                            anyhow::Ok(command)
-                        }
-                        .boxed()
-                    }
-                })
+                .call_language_server_command(
+                    &self.language_server_id,
+                    &self.config,
+                    Arc::new(WorktreeResourceDelegate(delegate)),
+                )
                 .await?;
 
             let path = self
                 .host
-                .path_from_extension(&self.extension.manifest.id, command.command.as_ref());
+                .path_from_extension(&self.wasm_extension.manifest.id, command.command.as_ref());
 
             // TODO: This should now be done via the `zed::make_file_executable` function in
             // Zed extension API, but we're leaving these existing usages in place temporarily
@@ -74,7 +90,7 @@ impl LspAdapter for ExtensionLspAdapter {
             // We can remove once the following extension versions no longer see any use:
             // - toml@0.0.2
             // - zig@0.0.1
-            if ["toml", "zig"].contains(&self.extension.manifest.id.as_ref())
+            if ["toml", "zig"].contains(&self.wasm_extension.manifest.id.as_ref())
                 && path.starts_with(&self.host.work_dir)
             {
                 #[cfg(not(windows))]
@@ -122,7 +138,7 @@ impl LspAdapter for ExtensionLspAdapter {
 
     fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
         let code_action_kinds = self
-            .extension
+            .wasm_extension
             .manifest
             .language_servers
             .get(&self.language_server_id)
@@ -144,11 +160,11 @@ impl LspAdapter for ExtensionLspAdapter {
         //
         // We can remove once the following extension versions no longer see any use:
         // - php@0.0.1
-        if self.extension.manifest.id.as_ref() == "php" {
+        if self.wasm_extension.manifest.id.as_ref() == "php" {
             return HashMap::from_iter([("PHP".into(), "php".into())]);
         }
 
-        self.extension
+        self.wasm_extension
             .manifest
             .language_servers
             .get(&LanguageServerName(self.config.name.clone().into()))
@@ -160,9 +176,9 @@ impl LspAdapter for ExtensionLspAdapter {
         self: Arc<Self>,
         delegate: &Arc<dyn LspAdapterDelegate>,
     ) -> Result<Option<serde_json::Value>> {
-        let delegate = delegate.clone();
+        let delegate = Arc::new(WorktreeResourceDelegate(delegate.clone())) as _;
         let json_options = self
-            .extension
+            .wasm_extension
             .call({
                 let this = self.clone();
                 |extension, store| {
@@ -172,7 +188,10 @@ impl LspAdapter for ExtensionLspAdapter {
                             .call_language_server_initialization_options(
                                 store,
                                 &this.language_server_id,
-                                &this.config,
+                                &wit::LanguageServerConfig {
+                                    name: this.config.name.clone(),
+                                    language_name: this.config.language_name.clone(),
+                                },
                                 resource,
                             )
                             .await?
@@ -198,9 +217,9 @@ impl LspAdapter for ExtensionLspAdapter {
         _: Arc<dyn LanguageToolchainStore>,
         _cx: &mut AsyncAppContext,
     ) -> Result<Value> {
-        let delegate = delegate.clone();
+        let delegate = Arc::new(WorktreeResourceDelegate(delegate.clone())) as _;
         let json_options: Option<String> = self
-            .extension
+            .wasm_extension
             .call({
                 let this = self.clone();
                 |extension, store| {
@@ -240,7 +259,7 @@ impl LspAdapter for ExtensionLspAdapter {
             .collect::<Vec<_>>();
 
         let labels = self
-            .extension
+            .wasm_extension
             .call({
                 let this = self.clone();
                 |extension, store| {
@@ -277,7 +296,7 @@ impl LspAdapter for ExtensionLspAdapter {
             .collect::<Vec<_>>();
 
         let labels = self
-            .extension
+            .wasm_extension
             .call({
                 let this = self.clone();
                 |extension, store| {

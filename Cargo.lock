@@ -4122,6 +4122,7 @@ dependencies = [
  "anyhow",
  "async-compression",
  "async-tar",
+ "async-trait",
  "collections",
  "fs",
  "futures 0.3.30",

@@ -1247,10 +1247,11 @@ impl ExtensionStore {
                             this.registration_hooks.register_lsp_adapter(
                                 language.clone(),
                                 ExtensionLspAdapter {
-                                    extension: wasm_extension.clone(),
+                                    extension: Arc::new(wasm_extension.clone()),
+                                    wasm_extension: wasm_extension.clone(),
                                     host: this.wasm_host.clone(),
                                     language_server_id: language_server_id.clone(),
-                                    config: wit::LanguageServerConfig {
+                                    config: extension::LanguageServerConfig {
                                         name: language_server_id.0.to_string(),
                                         language_name: language.to_string(),
                                     },

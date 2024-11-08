@@ -5,6 +5,7 @@ use assistant_slash_command::{
     ArgumentCompletion, SlashCommand, SlashCommandOutput, SlashCommandOutputSection,
     SlashCommandResult,
 };
+use extension_host::extension_lsp_adapter::WorktreeResourceDelegate;
 use futures::FutureExt as _;
 use gpui::{Task, WeakView, WindowContext};
 use language::{BufferSnapshot, LspAdapterDelegate};
@@ -97,6 +98,7 @@ impl SlashCommand for ExtensionSlashCommand {
                     move |extension, store| {
                         async move {
                             let resource = if let Some(delegate) = delegate {
+                                let delegate = Arc::new(WorktreeResourceDelegate(delegate)) as _;
                                 Some(store.data_mut().table().push(delegate)?)
                             } else {
                                 None

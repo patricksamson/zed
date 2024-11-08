@@ -8,9 +8,7 @@ use async_tar::Archive;
 use async_trait::async_trait;
 use futures::{io::BufReader, FutureExt as _};
 use futures::{lock::Mutex, AsyncReadExt};
-use language::{
-    language_settings::AllLanguageSettings, LanguageServerBinaryStatus, LspAdapterDelegate,
-};
+use language::{language_settings::AllLanguageSettings, LanguageServerBinaryStatus};
 use language::{LanguageName, LanguageServerName};
 use project::project_settings::ProjectSettings;
 use semantic_version::SemanticVersion;
@@ -47,7 +45,7 @@ mod settings {
     include!(concat!(env!("OUT_DIR"), "/since_v0.1.0/settings.rs"));
 }
 
-pub type ExtensionWorktree = Arc<dyn LspAdapterDelegate>;
+pub type ExtensionWorktree = Arc<dyn extension::WorktreeResource>;
 pub type ExtensionKeyValueStore = Arc<dyn DocsDatabase>;
 pub type ExtensionHttpResponseStream = Arc<Mutex<::http_client::Response<AsyncBody>>>;
 
@@ -253,27 +251,27 @@ impl HostKeyValueStore for WasmState {
 impl HostWorktree for WasmState {
     async fn id(
         &mut self,
-        delegate: Resource<Arc<dyn LspAdapterDelegate>>,
+        worktree_resource: Resource<Arc<dyn extension::WorktreeResource>>,
     ) -> wasmtime::Result<u64> {
-        let delegate = self.table.get(&delegate)?;
-        Ok(delegate.worktree_id().to_proto())
+        let worktree_resource = self.table.get(&worktree_resource)?;
+        Ok(worktree_resource.id())
     }
 
     async fn root_path(
         &mut self,
-        delegate: Resource<Arc<dyn LspAdapterDelegate>>,
+        worktree_resource: Resource<Arc<dyn extension::WorktreeResource>>,
     ) -> wasmtime::Result<String> {
-        let delegate = self.table.get(&delegate)?;
-        Ok(delegate.worktree_root_path().to_string_lossy().to_string())
+        let worktree_resource = self.table.get(&worktree_resource)?;
+        Ok(worktree_resource.root_path())
     }
 
     async fn read_text_file(
         &mut self,
-        delegate: Resource<Arc<dyn LspAdapterDelegate>>,
+        worktree_resource: Resource<Arc<dyn extension::WorktreeResource>>,
         path: String,
     ) -> wasmtime::Result<Result<String, String>> {
-        let delegate = self.table.get(&delegate)?;
-        Ok(delegate
+        let worktree_resource = self.table.get(&worktree_resource)?;
+        Ok(worktree_resource
             .read_text_file(path.into())
             .await
             .map_err(|error| error.to_string()))
@@ -281,22 +279,19 @@ impl HostWorktree for WasmState {
 
     async fn shell_env(
         &mut self,
-        delegate: Resource<Arc<dyn LspAdapterDelegate>>,
+        worktree_resource: Resource<Arc<dyn extension::WorktreeResource>>,
     ) -> wasmtime::Result<EnvVars> {
-        let delegate = self.table.get(&delegate)?;
-        Ok(delegate.shell_env().await.into_iter().collect())
+        let worktree_resource = self.table.get(&worktree_resource)?;
+        Ok(worktree_resource.shell_env().await)
     }
 
     async fn which(
         &mut self,
-        delegate: Resource<Arc<dyn LspAdapterDelegate>>,
+        worktree_resource: Resource<Arc<dyn extension::WorktreeResource>>,
         binary_name: String,
     ) -> wasmtime::Result<Option<String>> {
-        let delegate = self.table.get(&delegate)?;
-        Ok(delegate
-            .which(binary_name.as_ref())
-            .await
-            .map(|path| path.to_string_lossy().to_string()))
+        let worktree_resource = self.table.get(&worktree_resource)?;
+        Ok(worktree_resource.which(binary_name).await)
     }
 
     fn drop(&mut self, _worktree: Resource<Worktree>) -> Result<()> {

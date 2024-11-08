@@ -2,6 +2,7 @@ pub mod wit;
 
 use crate::{ExtensionManifest, ExtensionRegistrationHooks};
 use anyhow::{anyhow, bail, Context as _, Result};
+use async_trait::async_trait;
 use fs::{normalize_path, Fs};
 use futures::future::LocalBoxFuture;
 use futures::{
@@ -25,7 +26,7 @@ use wasmtime::{
     component::{Component, ResourceTable},
     Engine, Store,
 };
-use wasmtime_wasi as wasi;
+use wasmtime_wasi::{self as wasi, WasiView};
 use wit::Extension;
 pub use wit::SlashCommand;
 
@@ -47,6 +48,52 @@ pub struct WasmExtension {
     pub manifest: Arc<ExtensionManifest>,
     #[allow(unused)]
     pub zed_api_version: SemanticVersion,
+}
+
+#[async_trait]
+impl extension::Extension for WasmExtension {
+    async fn call_language_server_command(
+        &self,
+        language_server_id: &language::LanguageServerName,
+        config: &extension::LanguageServerConfig,
+        resource: Arc<dyn extension::WorktreeResource>,
+    ) -> Result<extension::Command> {
+        let language_server_id = language_server_id.clone();
+        let config = config.clone();
+        self.call(|extension, store| {
+            async move {
+                let resource = store.data_mut().table().push(resource)?;
+                let command = extension
+                    .call_language_server_command(
+                        store,
+                        &language_server_id,
+                        &wit::LanguageServerConfig {
+                            name: config.name.clone(),
+                            language_name: config.language_name.clone(),
+                        },
+                        resource,
+                    )
+                    .await?
+                    .map_err(|err| anyhow!("{err}"))?;
+                anyhow::Ok(extension::Command {
+                    command: command.command,
+                    args: command.args,
+                    env: command.env,
+                })
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn call_language_server_initialization_options(
+        &self,
+        language_server_id: &language::LanguageServerName,
+        config: &extension::LanguageServerConfig,
+        resource: Arc<dyn extension::WorktreeResource>,
+    ) -> Result<Result<Option<String>, String>> {
+        todo!()
+    }
 }
 
 pub struct WasmState {
