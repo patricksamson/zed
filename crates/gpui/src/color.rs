@@ -484,6 +484,13 @@ impl Hsla {
             a: self.a * factor.clamp(0., 1.),
         }
     }
+
+    /// to-do
+    pub fn darken(&self, amount: f32) -> Self {
+        let mut hsla = *self;
+        hsla.l = (hsla.l - amount).max(0.0);
+        hsla
+    }
 }
 
 impl From<Rgba> for Hsla {
