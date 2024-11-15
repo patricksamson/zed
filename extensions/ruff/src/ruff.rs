@@ -139,7 +139,9 @@ impl zed::Extension for RuffExtension {
         let ruff_binary = self.language_server_binary(language_server_id, worktree)?;
         Ok(zed::Command {
             command: ruff_binary.path,
-            args: ruff_binary.args.unwrap_or_else(|| vec!["server".into()]),
+            args: ruff_binary
+                .args
+                .unwrap_or_else(|| vec!["server".into(), "--preview"].into()),
             env: vec![],
         })
     }
