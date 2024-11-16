@@ -3347,10 +3347,7 @@ impl File {
     }
 
     pub fn project_entry_id(&self, _: &AppContext) -> Option<ProjectEntryId> {
-        match self.disk_state {
-            DiskState::Deleted => None,
-            _ => self.entry_id,
-        }
+        self.entry_id
     }
 }
 
