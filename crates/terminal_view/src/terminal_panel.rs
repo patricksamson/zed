@@ -29,7 +29,7 @@ use workspace::{
     item::SerializableItem,
     pane,
     ui::IconName,
-    DraggedTab, ItemId, NewTerminal, Pane, PaneGroup, ToggleZoom, Workspace,
+    DraggedTab, ItemId, NewTerminal, Pane, PaneGroup, SplitDirection, ToggleZoom, Workspace,
 };
 
 use anyhow::Result;
@@ -89,7 +89,6 @@ impl TerminalPanel {
             pane.display_nav_history_buttons(None);
             pane.set_should_display_tab_bar(|_| true);
 
-            let is_local = workspace.project().read(cx).is_local();
             let buffer_search_bar = cx.new_view(search::BufferSearchBar::new);
             pane.toolbar()
                 .update(cx, |toolbar, cx| toolbar.add_item(buffer_search_bar, cx));
@@ -100,8 +99,6 @@ impl TerminalPanel {
             cx.subscribe(&pane, Self::handle_pane_event),
         ];
         let center = PaneGroup::new(pane.clone());
-        // TODO kb this will not update the state of the panel
-        let closure_center = center.clone();
         let is_local = workspace.project().read(cx).is_local();
         let workspace_handle = workspace.weak_handle();
         pane.update(cx, |pane, cx| {
@@ -114,8 +111,10 @@ impl TerminalPanel {
                     };
                     if let Some(item) = item {
                         if item.downcast::<TerminalView>().is_some() {
-                            // TODO kb how to do self.center.split() here??
-                            // return ControlFlow::Continue(());
+                            // TODO kb how to determine the direction?
+                            cx.emit(pane::Event::Split(
+                                pane.drag_split_direction.unwrap_or(SplitDirection::Right),
+                            ));
                             return ControlFlow::Break(());
                         } else if let Some(project_path) = item.project_path(cx) {
                             if let Some(entry_path) = workspace_handle
@@ -362,7 +361,7 @@ impl TerminalPanel {
 
     fn handle_pane_event(
         &mut self,
-        _pane: View<Pane>,
+        pane: View<Pane>,
         event: &pane::Event,
         cx: &mut ViewContext<Self>,
     ) {
@@ -380,8 +379,66 @@ impl TerminalPanel {
                 }
             }
 
+            pane::Event::Split(direction) => {
+                let Some(new_pane) = self.add_pane(cx) else {
+                    return;
+                };
+                self.center.split(&pane, &new_pane, *direction).log_err();
+            }
+
             _ => {}
         }
+    }
+
+    fn add_pane(&mut self, cx: &mut ViewContext<Self>) -> Option<View<Pane>> {
+        let workspace = self.workspace.clone();
+        let (project, database_id, kind) = workspace
+            .update(cx, |workspace, cx| {
+                let kind = TerminalKind::Shell(default_working_directory(workspace, cx));
+                (workspace.project().clone(), workspace.database_id(), kind)
+            })
+            .ok()?;
+        // TODO kb reuse the old terminal's data (pwd, etc.)
+        let window = cx.window_handle();
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal(kind, window, cx))
+            .log_err()?;
+        // TODO kb deduplicate + store panes and new subscriptions somewhere
+        let pane = cx.new_view(|cx| {
+            let mut pane = Pane::new(
+                workspace.clone(),
+                project.clone(),
+                Default::default(),
+                None,
+                NewTerminal.boxed_clone(),
+                cx,
+            );
+            pane.set_can_navigate(false, cx);
+            pane.display_nav_history_buttons(None);
+            pane.set_should_display_tab_bar(|_| true);
+
+            let buffer_search_bar = cx.new_view(search::BufferSearchBar::new);
+            pane.toolbar()
+                .update(cx, |toolbar, cx| toolbar.add_item(buffer_search_bar, cx));
+
+            let terminal_view = Box::new(cx.new_view(|cx| {
+                TerminalView::new(terminal.clone(), workspace.clone(), database_id, cx)
+            }));
+            pane.add_item(terminal_view, true, true, None, cx);
+
+            pane
+        });
+        cx.subscribe(&pane, Self::handle_pane_event).detach();
+        // TODO kb needed?
+        // self.panes.push(pane.clone());
+        cx.focus_view(&pane);
+        workspace
+            .update(cx, |_, cx| {
+                cx.emit(workspace::Event::PaneAdded(pane.clone()))
+            })
+            .ok()?;
+
+        Some(pane)
     }
 
     pub fn open_terminal(
